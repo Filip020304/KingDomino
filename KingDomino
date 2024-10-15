@@ -1,0 +1,268 @@
+import cv2
+import numpy as np
+import os
+from collections import deque
+
+AntalKroner = 0
+Threshold = 0.55
+Threshold1 = 0.9
+FolderDir = r"C:/Users/fifik/OneDrive/Skrivebord/BilledBehandling/CroppedBoards" 
+ImagePath = os.path.join(FolderDir, "4.jpg")
+InputImg = cv2.imread(ImagePath)
+
+if InputImg is None:
+    print("Billede er ikke loaded")
+    exit()
+
+FeltType = np.zeros((5, 5))  # Array til felt typer da spillepladen er 5x5
+HSVIMG = cv2.cvtColor(InputImg, cv2.COLOR_BGR2HSV)
+
+# HSV Thresholds for forskelige Felter
+GrasMin = np.array([33, 189, 123])
+GrasMax = np.array([64, 255, 186])
+
+MarkMin = np.array([22, 221, 104])
+MarkMax = np.array([32, 255, 255])
+
+VandMin = np.array([102, 0, 0])
+VandMax = np.array([107, 255, 255])
+
+SkovMin = np.array([35, 157, 45])
+SkovMax = np.array([69, 248, 151])
+
+MoseMin = np.array([0, 60, 45])
+MoseMax = np.array([23, 174, 151])
+
+MineMin1 = np.array([1, 0, 0])
+MineMax1 = np.array([81, 51, 28])
+MineMin2 = np.array([152, 0, 0])
+MineMax2 = np.array([177, 184, 31])
+# Kernel for morphological operations
+kernel = np.ones((5, 5), np.uint8)
+#morphological_process bruges til at operere på hvores billeder med støj
+def morphological_process(mask):
+    """Apply morphology to filter the mask"""
+    mask_opened = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    mask_closed = cv2.morphologyEx(mask_opened, cv2.MORPH_CLOSE, kernel)
+    return mask_closed
+#Funktion for hvilket felt høre til hvad med Masks
+def BestemFelt(TileHSV): 
+    GrasMask = cv2.inRange(TileHSV, GrasMin, GrasMax)
+    GrasMask = morphological_process(GrasMask)
+
+    MarkMask = cv2.inRange(TileHSV, MarkMin, MarkMax)
+    MarkMask = morphological_process(MarkMask)
+
+    VandMask = cv2.inRange(TileHSV, VandMin, VandMax)
+    VandMask = morphological_process(VandMask)
+
+    SkovMask = cv2.inRange(TileHSV, SkovMin, SkovMax)
+    SkovMask = morphological_process(SkovMask)
+
+    MoseMask = cv2.inRange(TileHSV, MoseMin, MoseMax)
+    MoseMask = morphological_process(MoseMask)
+
+    MineMask1 = cv2.inRange(TileHSV, MineMin1, MineMax1)
+    MineMask2 = cv2.inRange(TileHSV, MineMin2, MineMax2)
+
+
+    MineMask = cv2.bitwise_or(MineMask1, MineMask2, mask=None)
+    MineMask = morphological_process(MineMask)
+
+    MeanMask = [np.mean(GrasMask), np.mean(MarkMask), np.mean(VandMask), np.mean(SkovMask), np.mean(MoseMask), np.mean(MineMask)]
+    
+    if max(MeanMask) > Threshold1:
+        if np.mean(GrasMask) == max(MeanMask):
+            return 1  # Gras
+        elif np.mean(MarkMask) == max(MeanMask):
+            return 2  # Mark
+        elif np.mean(VandMask) == max(MeanMask):
+            return 3  # Vand
+        elif np.mean(SkovMask) == max(MeanMask):
+            return 4  # Skov
+        elif np.mean(MoseMask) == max(MeanMask):
+            return 5  # Mose
+        elif np.mean(MineMask) == max(MeanMask):
+            return 6  # Mine
+    else:
+        return 0  # Ingen match 
+
+# Klasificere hvert felt 
+height, width = InputImg.shape[:2]
+if height == 500 and width == 500:
+    FeltStørelse = 100
+    for row in range(0, height, FeltStørelse):
+        for col in range(0, width, FeltStørelse):
+            TileHSV = HSVIMG[row:row + FeltStørelse, col:col + FeltStørelse]
+            field_type = BestemFelt(TileHSV)
+            FeltType[row // FeltStørelse, col // FeltStørelse] = field_type
+
+# Grassfire
+def grassfire(matrix):
+    rows, cols = matrix.shape
+    region_label = 1
+    regions = np.zeros_like(matrix, dtype=int)
+    visited = np.zeros_like(matrix, dtype=bool)
+
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]  
+
+    def flood_fill(r, c, current_label, field_type):
+        queue = deque([(r, c)])
+        visited[r, c] = True
+        regions[r, c] = current_label
+        
+        while queue:
+            x, y = queue.popleft()
+
+            for dr, dc in directions:
+                nx, ny = x + dr, y + dc
+
+                if 0 <= nx < rows and 0 <= ny < cols and not visited[nx, ny]:
+                    if matrix[nx, ny] == field_type:
+                        visited[nx, ny] = True
+                        regions[nx, ny] = current_label
+                        queue.append((nx, ny))
+
+    for r in range(rows):
+        for c in range(cols):
+            if not visited[r, c] and matrix[r, c] > 0:
+                flood_fill(r, c, region_label, matrix[r, c])
+                region_label += 1
+
+    return regions
+
+# Grassfire algoritme til at se hvilken region hvilket felt høre til
+labeled_regions = grassfire(FeltType)
+
+# Rotere krone templaten
+ImgKrone = cv2.imread("krone.png")
+ImgKroneRoteret90 = cv2.rotate(ImgKrone, cv2.ROTATE_90_CLOCKWISE)
+ImgKroneRoteret180 = cv2.rotate(ImgKroneRoteret90, cv2.ROTATE_90_CLOCKWISE)
+ImgKroneRoteret270 = cv2.rotate(ImgKroneRoteret180, cv2.ROTATE_90_CLOCKWISE)
+
+# Alle billeder til grey scale
+GraaBillede = cv2.cvtColor(InputImg, cv2.COLOR_BGR2GRAY)
+GraaKrone = cv2.cvtColor(ImgKrone, cv2.COLOR_BGR2GRAY)
+GraaKrone90 = cv2.cvtColor(ImgKroneRoteret90, cv2.COLOR_BGR2GRAY)
+GraaKrone180 = cv2.cvtColor(ImgKroneRoteret180, cv2.COLOR_BGR2GRAY)
+GraaKrone270 = cv2.cvtColor(ImgKroneRoteret270, cv2.COLOR_BGR2GRAY)
+
+KronerLocations = []
+
+def non_max_suppression(boxes, probs, overlapThresh=0.3):
+    """Perform non-maximum suppression to eliminate overlapping boxes."""
+    if len(boxes) == 0:
+        return []
+
+    # List for valgte indexes
+    pick = []
+
+    # Convert boxes to float
+    boxes = boxes.astype("float")
+
+    # Kordinateer på boxene
+    x1 = boxes[:, 0]
+    y1 = boxes[:, 1]
+    x2 = boxes[:, 0] + boxes[:, 2]
+    y2 = boxes[:, 1] + boxes[:, 3]
+
+    # feltet på boxene
+    area = (x2 - x1 + 1) * (y2 - y1 + 1)
+    idxs = np.argsort(probs)
+
+    while len(idxs) > 0:
+        # Tag det sidste index i listen 
+        last = len(idxs) - 1
+        i = idxs[last]
+        pick.append(i)
+
+        xx1 = np.maximum(x1[i], x1[idxs[:last]])
+        yy1 = np.maximum(y1[i], y1[idxs[:last]])
+        xx2 = np.minimum(x2[i], x2[idxs[:last]])
+        yy2 = np.minimum(y2[i], y2[idxs[:last]])
+
+        # Bredde og højde på boxen
+        w = np.maximum(0, xx2 - xx1 + 1)
+        h = np.maximum(0, yy2 - yy1 + 1)
+
+        # Størelsen hvor flere boxe går over hinanden
+        overlap = (w * h) / area[idxs[:last]]
+
+        #Fjern alle boxe der krydser over hinande
+        idxs = np.delete(idxs, np.concatenate(([last], np.where(overlap > overlapThresh)[0])))
+
+    return boxes[pick].astype("int")
+
+#Template match funktion til kroner+rotation+non max supresion
+def TemplateMatch(Templaten, GraaBillede, TemplatensNavn):
+    global KronerLocations
+    global AntalKroner
+    Result = cv2.matchTemplate(GraaBillede, Templaten, cv2.TM_CCOEFF_NORMED)
+    Lokation = np.where(Result >= Threshold)
+
+    boxes = []
+    scores = []
+
+    for pt in zip(*Lokation[::-1]):
+        # Lav en box til at detecte
+        box = [pt[0], pt[1], Templaten.shape[1], Templaten.shape[0]]  # x, y, width, height
+        boxes.append(box)
+        scores.append(Result[pt[1], pt[0]])
+
+    if len(boxes) > 0:
+        boxes = np.array(boxes)
+        scores = np.array(scores)
+        
+        # Apply NMS
+        boxes_nms = non_max_suppression(boxes, scores)
+
+        # Update AntalKroner based on NMS filtered boxes
+        AntalKroner += len(boxes_nms)
+        
+        # Store locations and draw boxes
+        for (x, y, w, h) in boxes_nms:
+            KronerLocations.append((x, y))  # Append locations after NMS
+            cv2.rectangle(InputImg, (x, y), (x + w, y + h), (0, 0, 255), 2)
+            print(f"Match fundet til template {TemplatensNavn} på position x: {x}, y: {y}")
+
+
+# Funktion for point
+def calculate_points(labeled_regions, KronerLocations, FeltStørelse):
+    region_scores = {}
+    
+    for (x, y) in KronerLocations:
+        region_row = y // FeltStørelse
+        region_col = x // FeltStørelse
+        region_label = labeled_regions[region_row, region_col]
+        
+        if region_label > 0:
+            if region_label not in region_scores:
+                region_scores[region_label] = 0
+            
+            num_tiles_in_region = np.sum(labeled_regions == region_label)
+            region_scores[region_label] += num_tiles_in_region  # Add to score
+    
+    return region_scores
+
+# Vi template mathcer alle rotationer
+TemplateMatch(GraaKrone, GraaBillede, "OriginalKrone")
+TemplateMatch(GraaKrone90, GraaBillede, "Krone90")
+TemplateMatch(GraaKrone180, GraaBillede, "Krone180")
+TemplateMatch(GraaKrone270, GraaBillede, "Krone270")
+
+#Regn alle points for hver region altså hvilke felter der høre sammen
+RegionPoints = calculate_points(labeled_regions, KronerLocations, FeltStørelse)
+
+# Summen af alle point
+TotalPoints = sum(RegionPoints.values())
+
+
+print("Antal Kroner på billedet:", AntalKroner)
+print("Typer af felter:", FeltType)
+print("Labeled regions matrix:", labeled_regions)
+print("Region Points:", RegionPoints)
+print("Total Points:", TotalPoints)
+
+cv2.imshow('Originalt Billede', InputImg)
+cv2.waitKey(0)
+cv2.destroyAllWindows()
